@@ -1,0 +1,287 @@
+import "server-only"
+
+import type { RowDataPacket } from "mysql2"
+
+import { withConnection, type MysqlConnection } from "./mysql"
+import type {
+  ColumnMetadata,
+  ConnectionConfig,
+  DatabaseSummary,
+  ForeignKeyMetadata,
+  IndexMetadata,
+  ReferencingTableMetadata,
+  TableMetadata,
+  TableSummary,
+  UniqueKey,
+} from "./types"
+
+const systemDatabases = [
+  "information_schema",
+  "mysql",
+  "performance_schema",
+  "sys",
+]
+
+type SchemaRow = RowDataPacket & { schema_name: string }
+type TableRow = RowDataPacket & {
+  table_name: string
+  table_type: string
+  engine: string | null
+  table_rows: number | null
+  create_time: Date | null
+  update_time: Date | null
+}
+type ColumnRow = RowDataPacket & {
+  column_name: string
+  ordinal_position: number
+  column_type: string
+  is_nullable: "YES" | "NO"
+  column_default: string | null
+  extra: string
+  column_key: string
+  column_comment: string
+  character_set_name: string | null
+  collation_name: string | null
+}
+type IndexRow = RowDataPacket & {
+  index_name: string
+  non_unique: 0 | 1
+  seq_in_index: number
+  column_name: string
+  collation: string | null
+  index_type: string
+}
+type ForeignKeyRow = RowDataPacket & {
+  constraint_name: string
+  column_name: string
+  referenced_table_name: string
+  referenced_column_name: string
+}
+type ReferencingRow = RowDataPacket & {
+  table_name: string
+  column_name: string
+  constraint_name: string
+}
+
+function allowedDatabaseNames(names: string[]) {
+  const allowlist = process.env.DATABASE_VISUALIZER_ALLOWED_DATABASES?.split(
+    ","
+  )
+    .map((name) => name.trim())
+    .filter(Boolean)
+
+  if (!allowlist?.length) {
+    return names
+  }
+
+  return names.filter((name) => allowlist.includes(name))
+}
+
+export async function listDatabases(
+  config: ConnectionConfig
+): Promise<DatabaseSummary[]> {
+  return withConnection(config, async (connection) => {
+    const [rows] = await connection.query<SchemaRow[]>(
+      `SELECT schema_name
+       FROM information_schema.schemata
+       WHERE schema_name NOT IN (?, ?, ?, ?)
+       ORDER BY schema_name`,
+      systemDatabases
+    )
+
+    return allowedDatabaseNames(rows.map((row) => row.schema_name)).map(
+      (name) => ({ name })
+    )
+  })
+}
+
+export async function listTables(
+  config: ConnectionConfig,
+  database: string
+): Promise<TableSummary[]> {
+  return withConnection(config, async (connection) => {
+    await assertDatabaseExists(connection, database)
+
+    const [rows] = await connection.query<TableRow[]>(
+      `SELECT table_name, table_type, engine, table_rows, create_time, update_time
+       FROM information_schema.tables
+       WHERE table_schema = ?
+       ORDER BY table_name`,
+      [database]
+    )
+
+    return rows.map((row) => ({
+      name: row.table_name,
+      type: row.table_type,
+      engine: row.engine,
+      rows: row.table_rows,
+      createdAt: row.create_time,
+      updatedAt: row.update_time,
+    }))
+  })
+}
+
+export async function getTableMetadata(
+  config: ConnectionConfig,
+  database: string,
+  table: string
+): Promise<TableMetadata> {
+  return withConnection(config, async (connection) => {
+    await assertTableExists(connection, database, table)
+
+    const [columns] = await connection.query<ColumnRow[]>(
+      `SELECT column_name, ordinal_position, column_type, is_nullable, column_default, extra,
+              column_key, column_comment, character_set_name, collation_name
+       FROM information_schema.columns
+       WHERE table_schema = ? AND table_name = ?
+       ORDER BY ordinal_position`,
+      [database, table]
+    )
+    const [indexes] = await connection.query<IndexRow[]>(
+      `SELECT index_name, non_unique, seq_in_index, column_name, collation, index_type
+       FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = ?
+       ORDER BY index_name, seq_in_index`,
+      [database, table]
+    )
+    const [foreignKeys] = await connection.query<ForeignKeyRow[]>(
+      `SELECT constraint_name, column_name, referenced_table_name, referenced_column_name
+       FROM information_schema.key_column_usage
+       WHERE table_schema = ? AND table_name = ? AND referenced_table_name IS NOT NULL
+       ORDER BY constraint_name, ordinal_position`,
+      [database, table]
+    )
+    const [referencingTables] = await connection.query<ReferencingRow[]>(
+      `SELECT table_name, column_name, constraint_name
+       FROM information_schema.key_column_usage
+       WHERE table_schema = ? AND referenced_table_name = ? AND referenced_column_name IS NOT NULL
+       ORDER BY table_name, column_name`,
+      [database, table]
+    )
+
+    return {
+      columns: columns.map(mapColumn),
+      indexes: indexes.map(mapIndex),
+      foreignKeys: foreignKeys.map(mapForeignKey),
+      referencingTables: referencingTables.map(mapReferencingTable),
+    }
+  })
+}
+
+export async function assertDatabaseExists(
+  connection: MysqlConnection,
+  database: string
+) {
+  const [rows] = await connection.query<SchemaRow[]>(
+    `SELECT schema_name
+     FROM information_schema.schemata
+     WHERE schema_name = ?`,
+    [database]
+  )
+  const allowed = allowedDatabaseNames(rows.map((row) => row.schema_name))
+
+  if (!allowed.includes(database)) {
+    throw new Error("Database is not available.")
+  }
+}
+
+export async function assertTableExists(
+  connection: MysqlConnection,
+  database: string,
+  table: string
+) {
+  await assertDatabaseExists(connection, database)
+
+  const [rows] = await connection.query<TableRow[]>(
+    `SELECT table_name
+     FROM information_schema.tables
+     WHERE table_schema = ? AND table_name = ?`,
+    [database, table]
+  )
+
+  if (!rows.some((row) => row.table_name === table)) {
+    throw new Error("Table is not available.")
+  }
+}
+
+export async function getColumnsForTable(
+  connection: MysqlConnection,
+  database: string,
+  table: string
+) {
+  await assertTableExists(connection, database, table)
+
+  const [rows] = await connection.query<ColumnRow[]>(
+    `SELECT column_name, ordinal_position, column_type, is_nullable, column_default, extra,
+            column_key, column_comment, character_set_name, collation_name
+     FROM information_schema.columns
+     WHERE table_schema = ? AND table_name = ?
+     ORDER BY ordinal_position`,
+    [database, table]
+  )
+
+  return rows.map(mapColumn)
+}
+
+export function getUniqueKeys(indexes: IndexMetadata[]): UniqueKey[] {
+  const grouped = new Map<string, IndexMetadata[]>()
+
+  for (const index of indexes) {
+    if (index.nonUnique) {
+      continue
+    }
+
+    grouped.set(index.name, [...(grouped.get(index.name) ?? []), index])
+  }
+
+  return [...grouped.entries()].map(([name, parts]) => ({
+    name,
+    columns: parts
+      .sort((a, b) => a.sequence - b.sequence)
+      .map((part) => part.columnName),
+    primary: name === "PRIMARY",
+  }))
+}
+
+function mapColumn(row: ColumnRow): ColumnMetadata {
+  return {
+    name: row.column_name,
+    ordinalPosition: row.ordinal_position,
+    columnType: row.column_type,
+    isNullable: row.is_nullable === "YES",
+    defaultValue: row.column_default,
+    extra: row.extra,
+    key: row.column_key,
+    comment: row.column_comment,
+    characterSet: row.character_set_name,
+    collation: row.collation_name,
+  }
+}
+
+function mapIndex(row: IndexRow): IndexMetadata {
+  return {
+    name: row.index_name,
+    nonUnique: row.non_unique === 1,
+    sequence: row.seq_in_index,
+    columnName: row.column_name,
+    collation: row.collation,
+    type: row.index_type,
+  }
+}
+
+function mapForeignKey(row: ForeignKeyRow): ForeignKeyMetadata {
+  return {
+    constraintName: row.constraint_name,
+    columnName: row.column_name,
+    referencedTableName: row.referenced_table_name,
+    referencedColumnName: row.referenced_column_name,
+  }
+}
+
+function mapReferencingTable(row: ReferencingRow): ReferencingTableMetadata {
+  return {
+    tableName: row.table_name,
+    columnName: row.column_name,
+    constraintName: row.constraint_name,
+  }
+}
