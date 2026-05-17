@@ -4,12 +4,11 @@ import {
   ChevronRight,
   KeyRound,
   Pencil,
-  Plus,
   Trash2,
 } from "lucide-react"
 
-import { deleteRowAction, insertRowAction, updateRowAction } from "../actions"
-import { canEditColumn, getTablePolicy } from "../table-policy"
+import { deleteRowAction, updateRowAction } from "../actions"
+import { getEditableColumns, getTablePolicy } from "../table-policy"
 import type {
   ColumnMetadata,
   DataRow,
@@ -41,7 +40,13 @@ export function TableBrowser({
   )
   const uniqueKey =
     rowPage.uniqueKeys.find((key) => key.primary) ?? rowPage.uniqueKeys[0]
-  const canUpdate = policy.canUpdate && Boolean(uniqueKey)
+  const editableColumns = getEditableColumns(
+    policy,
+    visibleColumns,
+    rowPage.uniqueKeys
+  )
+  const canUpdate =
+    policy.canUpdate && Boolean(uniqueKey) && editableColumns.length > 0
   const canDelete = policy.canDelete && Boolean(uniqueKey)
 
   return (
@@ -53,31 +58,6 @@ export function TableBrowser({
               {database}
             </p>
             <h1 className="text-xl font-semibold break-all">{table}</h1>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {policy.canInsert ? (
-              <details className="relative">
-                <summary className="list-none">
-                  <Button asChild size="sm">
-                    <span>
-                      <Plus />
-                      Insert
-                    </span>
-                  </Button>
-                </summary>
-                <div className="absolute right-0 z-20 mt-2 w-[min(92vw,520px)] rounded-lg border bg-popover p-4 shadow-lg">
-                  <RowForm
-                    action={insertRowAction}
-                    database={database}
-                    table={table}
-                    columns={visibleColumns}
-                    row={{}}
-                    returnPath={returnPath}
-                    mode="insert"
-                  />
-                </div>
-              </details>
-            ) : null}
           </div>
         </div>
 
@@ -157,11 +137,10 @@ export function TableBrowser({
                               action={updateRowAction}
                               database={database}
                               table={table}
-                              columns={visibleColumns}
+                              columns={editableColumns}
                               row={row}
                               uniqueKey={uniqueKey}
                               returnPath={returnPath}
-                              mode="update"
                             />
                           </div>
                         </details>
@@ -323,7 +302,6 @@ function RowForm({
   row,
   uniqueKey,
   returnPath,
-  mode,
 }: {
   action: (formData: FormData) => void | Promise<void>
   database: string
@@ -332,13 +310,7 @@ function RowForm({
   row: DataRow
   uniqueKey?: UniqueKey
   returnPath: string
-  mode: "insert" | "update"
 }) {
-  const policy = getTablePolicy(database, table)
-  const editableColumns = columns.filter((column) =>
-    canEditColumn(policy, column.name)
-  )
-
   return (
     <form action={action} className="grid max-h-[75vh] gap-3 overflow-auto">
       <WriteHiddenFields
@@ -346,18 +318,14 @@ function RowForm({
         table={table}
         returnPath={returnPath}
       />
-      {mode === "update" ? (
-        <KeyHiddenFields row={row} uniqueKey={uniqueKey} />
-      ) : null}
+      <KeyHiddenFields row={row} uniqueKey={uniqueKey} />
       <div>
-        <h2 className="font-medium">
-          {mode === "insert" ? "Insert row" : "Edit row"}
-        </h2>
+        <h2 className="font-medium">Edit row</h2>
         <p className="text-xs text-muted-foreground">
-          Only policy-enabled fields are editable.
+          Key, generated, timestamp, binary, and sensitive fields are protected.
         </p>
       </div>
-      {editableColumns.map((column) => (
+      {columns.map((column) => (
         <label key={column.name} className="grid gap-1.5 text-sm">
           <span className="flex items-center justify-between gap-2">
             <span className="font-medium break-all">{column.name}</span>
@@ -378,9 +346,7 @@ function RowForm({
           />
         </label>
       ))}
-      <Button type="submit">
-        {mode === "insert" ? "Insert row" : "Save changes"}
-      </Button>
+      <Button type="submit">Save changes</Button>
     </form>
   )
 }

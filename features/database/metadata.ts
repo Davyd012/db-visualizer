@@ -23,7 +23,14 @@ const systemDatabases = [
   "sys",
 ]
 
-type MetadataScalar = string | number | bigint | Buffer | Date | null | undefined
+type MetadataScalar =
+  | string
+  | number
+  | bigint
+  | Buffer
+  | Date
+  | null
+  | undefined
 type SchemaRow = RowDataPacket & { schema_name?: MetadataScalar } & Record<
     string,
     MetadataScalar
@@ -397,7 +404,9 @@ async function getVisibleDatabaseNames(connection: MysqlConnection) {
       systemDatabases
     )
 
-    return rows.map((row) => normalizeMetadataValue(row.schema_name)).filter(isPresent)
+    return rows
+      .map((row) => normalizeMetadataValue(row.schema_name))
+      .filter(isPresent)
   }
 }
 
@@ -433,11 +442,16 @@ async function listTablesWithShowTables(
   for (const row of rows) {
     const entries = Object.entries(row)
       .map(([key, value]) => [key, normalizeMetadataValue(value)] as const)
-      .filter((entry): entry is readonly [string, string] => isPresent(entry[1]))
+      .filter((entry): entry is readonly [string, string] =>
+        isPresent(entry[1])
+      )
     const name =
-      entries.find(([key]) => key.toLowerCase().startsWith("tables_in_"))?.[1] ??
-      entries.find(([key]) => key.toLowerCase() !== "table_type")?.[1]
-    const type = entries.find(([key]) => key.toLowerCase() === "table_type")?.[1]
+      entries.find(([key]) =>
+        key.toLowerCase().startsWith("tables_in_")
+      )?.[1] ?? entries.find(([key]) => key.toLowerCase() !== "table_type")?.[1]
+    const type = entries.find(
+      ([key]) => key.toLowerCase() === "table_type"
+    )?.[1]
 
     if (!name) {
       continue

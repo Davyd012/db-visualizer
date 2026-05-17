@@ -5,7 +5,7 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2"
 import { quoteIdentifier, quoteQualifiedIdentifier } from "./identifier"
 import { getColumnsForTable, getUniqueKeys } from "./metadata"
 import { withConnection, type MysqlConnection } from "./mysql"
-import { canEditColumn, getTablePolicy } from "./table-policy"
+import { getEditableColumns, getTablePolicy } from "./table-policy"
 import type {
   ConnectionConfig,
   DataRow,
@@ -284,20 +284,24 @@ async function getWriteContext(
     throw new Error(`${operation} is disabled for this table.`)
   }
 
+  const uniqueKeys = getUniqueKeys(
+    indexRows.map((row) => ({
+      name: String(row.index_name),
+      nonUnique: Number(row.non_unique) === 1,
+      sequence: Number(row.seq_in_index),
+      columnName: String(row.column_name),
+      collation: row.collation === null ? null : String(row.collation),
+      type: String(row.index_type),
+    }))
+  )
+
   return {
-    editableColumns: columns
-      .map((column) => column.name)
-      .filter((column) => canEditColumn(policy, column)),
-    uniqueKey: getUniqueKeys(
-      indexRows.map((row) => ({
-        name: String(row.index_name),
-        nonUnique: Number(row.non_unique) === 1,
-        sequence: Number(row.seq_in_index),
-        columnName: String(row.column_name),
-        collation: row.collation === null ? null : String(row.collation),
-        type: String(row.index_type),
-      }))
-    ).sort((a, b) => Number(!a.primary) - Number(!b.primary))[0],
+    editableColumns: getEditableColumns(policy, columns, uniqueKeys).map(
+      (column) => column.name
+    ),
+    uniqueKey: uniqueKeys.sort(
+      (a, b) => Number(!a.primary) - Number(!b.primary)
+    )[0],
   }
 }
 
