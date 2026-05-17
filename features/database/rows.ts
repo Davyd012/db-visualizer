@@ -70,7 +70,13 @@ export async function getRows(
       offset,
     ])
     const [indexRows] = await connection.query<RowDataPacket[]>(
-      `SELECT index_name, non_unique, seq_in_index, column_name, collation, index_type
+      `SELECT
+              index_name AS index_name,
+              non_unique AS non_unique,
+              seq_in_index AS seq_in_index,
+              column_name AS column_name,
+              collation AS collation,
+              index_type AS index_type
        FROM information_schema.statistics
        WHERE table_schema = ? AND table_name = ?
        ORDER BY index_name, seq_in_index`,
@@ -254,7 +260,13 @@ async function getWriteContext(
 ) {
   const columns = await getColumnsForTable(connection, database, table)
   const [indexRows] = await connection.query<RowDataPacket[]>(
-    `SELECT index_name, non_unique, seq_in_index, column_name, collation, index_type
+    `SELECT
+            index_name AS index_name,
+            non_unique AS non_unique,
+            seq_in_index AS seq_in_index,
+            column_name AS column_name,
+            collation AS collation,
+            index_type AS index_type
      FROM information_schema.statistics
      WHERE table_schema = ? AND table_name = ?
      ORDER BY index_name, seq_in_index`,

@@ -23,9 +23,10 @@ const systemDatabases = [
   "sys",
 ]
 
-type SchemaRow = RowDataPacket & { schema_name?: string } & Record<
+type MetadataScalar = string | number | bigint | Buffer | Date | null | undefined
+type SchemaRow = RowDataPacket & { schema_name?: MetadataScalar } & Record<
     string,
-    string | undefined
+    MetadataScalar
   >
 type TableRow = RowDataPacket & {
   table_name: string
@@ -35,7 +36,7 @@ type TableRow = RowDataPacket & {
   create_time: Date | null
   update_time: Date | null
 }
-type ShowTableRow = RowDataPacket & Record<string, string | undefined>
+type ShowTableRow = RowDataPacket & Record<string, MetadataScalar>
 type ColumnRow = RowDataPacket & {
   column_name: string
   ordinal_position: number
@@ -47,6 +48,14 @@ type ColumnRow = RowDataPacket & {
   column_comment: string
   character_set_name: string | null
   collation_name: string | null
+}
+type ShowColumnRow = RowDataPacket & {
+  Field: MetadataScalar
+  Type: MetadataScalar
+  Null: MetadataScalar
+  Key: MetadataScalar
+  Default: MetadataScalar
+  Extra: MetadataScalar
 }
 type IndexRow = RowDataPacket & {
   index_name: string
@@ -100,7 +109,7 @@ export async function listDatabases(
       }
     } catch {
       const [rows] = await connection.query<SchemaRow[]>(
-        `SELECT schema_name
+        `SELECT schema_name AS schema_name
          FROM information_schema.schemata
          WHERE schema_name NOT IN (?, ?, ?, ?)
          ORDER BY schema_name`,
@@ -108,8 +117,10 @@ export async function listDatabases(
       )
 
       for (const row of rows) {
-        if (row.schema_name) {
-          names.add(row.schema_name)
+        const name = normalizeMetadataValue(row.schema_name)
+
+        if (name) {
+          names.add(name)
         }
       }
     }
@@ -133,7 +144,13 @@ export async function listTables(
     await assertDatabaseExists(connection, database)
 
     const [rows] = await connection.query<TableRow[]>(
-      `SELECT table_name, table_type, engine, table_rows, create_time, update_time
+      `SELECT
+         table_name AS table_name,
+         table_type AS table_type,
+         engine AS engine,
+         table_rows AS table_rows,
+         create_time AS create_time,
+         update_time AS update_time
        FROM information_schema.tables
        WHERE table_schema = ?
        ORDER BY table_name`,
@@ -168,29 +185,51 @@ export async function getTableMetadata(
     await assertTableExists(connection, database, table)
 
     const [columns] = await connection.query<ColumnRow[]>(
-      `SELECT column_name, ordinal_position, column_type, is_nullable, column_default, extra,
-              column_key, column_comment, character_set_name, collation_name
+      `SELECT
+              column_name AS column_name,
+              ordinal_position AS ordinal_position,
+              column_type AS column_type,
+              is_nullable AS is_nullable,
+              column_default AS column_default,
+              extra AS extra,
+              column_key AS column_key,
+              column_comment AS column_comment,
+              character_set_name AS character_set_name,
+              collation_name AS collation_name
        FROM information_schema.columns
        WHERE table_schema = ? AND table_name = ?
        ORDER BY ordinal_position`,
       [database, table]
     )
     const [indexes] = await connection.query<IndexRow[]>(
-      `SELECT index_name, non_unique, seq_in_index, column_name, collation, index_type
+      `SELECT
+              index_name AS index_name,
+              non_unique AS non_unique,
+              seq_in_index AS seq_in_index,
+              column_name AS column_name,
+              collation AS collation,
+              index_type AS index_type
        FROM information_schema.statistics
        WHERE table_schema = ? AND table_name = ?
        ORDER BY index_name, seq_in_index`,
       [database, table]
     )
     const [foreignKeys] = await connection.query<ForeignKeyRow[]>(
-      `SELECT constraint_name, column_name, referenced_table_name, referenced_column_name
+      `SELECT
+              constraint_name AS constraint_name,
+              column_name AS column_name,
+              referenced_table_name AS referenced_table_name,
+              referenced_column_name AS referenced_column_name
        FROM information_schema.key_column_usage
        WHERE table_schema = ? AND table_name = ? AND referenced_table_name IS NOT NULL
        ORDER BY constraint_name, ordinal_position`,
       [database, table]
     )
     const [referencingTables] = await connection.query<ReferencingRow[]>(
-      `SELECT table_name, column_name, constraint_name
+      `SELECT
+              table_name AS table_name,
+              column_name AS column_name,
+              constraint_name AS constraint_name
        FROM information_schema.key_column_usage
        WHERE table_schema = ? AND referenced_table_name = ? AND referenced_column_name IS NOT NULL
        ORDER BY table_name, column_name`,
@@ -198,7 +237,9 @@ export async function getTableMetadata(
     )
 
     return {
-      columns: columns.map(mapColumn),
+      columns: columns.length
+        ? columns.map(mapColumn)
+        : await listColumnsWithShowColumns(connection, database, table),
       indexes: indexes.map(mapIndex),
       foreignKeys: foreignKeys.map(mapForeignKey),
       referencingTables: referencingTables.map(mapReferencingTable),
@@ -233,7 +274,7 @@ export async function assertTableExists(
   await assertDatabaseExists(connection, database)
 
   const [rows] = await connection.query<TableRow[]>(
-    `SELECT table_name
+    `SELECT table_name AS table_name
      FROM information_schema.tables
      WHERE table_schema = ? AND table_name = ?`,
     [database, table]
@@ -256,15 +297,28 @@ export async function getColumnsForTable(
   await assertTableExists(connection, database, table)
 
   const [rows] = await connection.query<ColumnRow[]>(
-    `SELECT column_name, ordinal_position, column_type, is_nullable, column_default, extra,
-            column_key, column_comment, character_set_name, collation_name
+    `SELECT
+            column_name AS column_name,
+            ordinal_position AS ordinal_position,
+            column_type AS column_type,
+            is_nullable AS is_nullable,
+            column_default AS column_default,
+            extra AS extra,
+            column_key AS column_key,
+            column_comment AS column_comment,
+            character_set_name AS character_set_name,
+            collation_name AS collation_name
      FROM information_schema.columns
      WHERE table_schema = ? AND table_name = ?
      ORDER BY ordinal_position`,
     [database, table]
   )
 
-  return rows.map(mapColumn)
+  if (rows.length) {
+    return rows.map(mapColumn)
+  }
+
+  return listColumnsWithShowColumns(connection, database, table)
 }
 
 export function getUniqueKeys(indexes: IndexMetadata[]): UniqueKey[] {
@@ -337,13 +391,13 @@ async function getVisibleDatabaseNames(connection: MysqlConnection) {
     return rows.map(readDatabaseName).filter(isPresent)
   } catch {
     const [rows] = await connection.query<SchemaRow[]>(
-      `SELECT schema_name
+      `SELECT schema_name AS schema_name
        FROM information_schema.schemata
        WHERE schema_name NOT IN (?, ?, ?, ?)`,
       systemDatabases
     )
 
-    return rows.map((row) => row.schema_name).filter(isPresent)
+    return rows.map((row) => normalizeMetadataValue(row.schema_name)).filter(isPresent)
   }
 }
 
@@ -357,10 +411,13 @@ async function canUseDatabase(connection: MysqlConnection, database: string) {
 }
 
 function readDatabaseName(row: SchemaRow) {
-  return row.schema_name ?? Object.values(row).find(isPresent)
+  return (
+    normalizeMetadataValue(row.schema_name) ??
+    Object.values(row).map(normalizeMetadataValue).find(isPresent)
+  )
 }
 
-function isPresent(value: string | undefined): value is string {
+function isPresent(value: string | undefined | null): value is string {
   return typeof value === "string" && value.length > 0
 }
 
@@ -374,8 +431,13 @@ async function listTablesWithShowTables(
   const tables: TableSummary[] = []
 
   for (const row of rows) {
-    const values = Object.values(row).filter(isPresent)
-    const name = values[0]
+    const entries = Object.entries(row)
+      .map(([key, value]) => [key, normalizeMetadataValue(value)] as const)
+      .filter((entry): entry is readonly [string, string] => isPresent(entry[1]))
+    const name =
+      entries.find(([key]) => key.toLowerCase().startsWith("tables_in_"))?.[1] ??
+      entries.find(([key]) => key.toLowerCase() !== "table_type")?.[1]
+    const type = entries.find(([key]) => key.toLowerCase() === "table_type")?.[1]
 
     if (!name) {
       continue
@@ -383,7 +445,7 @@ async function listTablesWithShowTables(
 
     tables.push({
       name,
-      type: values[1] ?? "BASE TABLE",
+      type: type ?? "BASE TABLE",
       engine: null,
       rows: null,
       createdAt: null,
@@ -392,4 +454,49 @@ async function listTablesWithShowTables(
   }
 
   return tables
+}
+
+async function listColumnsWithShowColumns(
+  connection: MysqlConnection,
+  database: string,
+  table: string
+): Promise<ColumnMetadata[]> {
+  const [rows] = await connection.query<ShowColumnRow[]>(
+    `SHOW FULL COLUMNS FROM ${quoteIdentifier(database)}.${quoteIdentifier(table)}`
+  )
+
+  return rows.map((row, index) => {
+    const name = normalizeMetadataValue(row.Field) ?? ""
+    const columnType = normalizeMetadataValue(row.Type) ?? "unknown"
+    const nullable = normalizeMetadataValue(row.Null) === "YES"
+
+    return {
+      name,
+      ordinalPosition: index + 1,
+      columnType,
+      isNullable: nullable,
+      defaultValue: normalizeMetadataValue(row.Default) ?? null,
+      extra: normalizeMetadataValue(row.Extra) ?? "",
+      key: normalizeMetadataValue(row.Key) ?? "",
+      comment: "",
+      characterSet: null,
+      collation: null,
+    }
+  })
+}
+
+function normalizeMetadataValue(value: MetadataScalar) {
+  if (value === null || value === undefined) {
+    return undefined
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.toString("utf8")
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString()
+  }
+
+  return String(value)
 }
