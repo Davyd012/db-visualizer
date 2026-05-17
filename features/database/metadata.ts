@@ -2,6 +2,7 @@ import "server-only"
 
 import type { RowDataPacket } from "mysql2"
 
+import { quoteIdentifier } from "./identifier"
 import { withConnection, type MysqlConnection } from "./mysql"
 import type {
   ColumnMetadata,
@@ -22,7 +23,10 @@ const systemDatabases = [
   "sys",
 ]
 
-type SchemaRow = RowDataPacket & { schema_name: string }
+type SchemaRow = RowDataPacket & { schema_name?: string } & Record<
+    string,
+    string | undefined
+  >
 type TableRow = RowDataPacket & {
   table_name: string
   table_type: string
@@ -31,6 +35,7 @@ type TableRow = RowDataPacket & {
   create_time: Date | null
   update_time: Date | null
 }
+type ShowTableRow = RowDataPacket & Record<string, string | undefined>
 type ColumnRow = RowDataPacket & {
   column_name: string
   ordinal_position: number
@@ -81,17 +86,42 @@ export async function listDatabases(
   config: ConnectionConfig
 ): Promise<DatabaseSummary[]> {
   return withConnection(config, async (connection) => {
-    const [rows] = await connection.query<SchemaRow[]>(
-      `SELECT schema_name
-       FROM information_schema.schemata
-       WHERE schema_name NOT IN (?, ?, ?, ?)
-       ORDER BY schema_name`,
-      systemDatabases
-    )
+    const names = new Set<string>()
 
-    return allowedDatabaseNames(rows.map((row) => row.schema_name)).map(
-      (name) => ({ name })
-    )
+    try {
+      const [rows] = await connection.query<SchemaRow[]>("SHOW DATABASES")
+
+      for (const row of rows) {
+        const name = readDatabaseName(row)
+
+        if (name && !systemDatabases.includes(name)) {
+          names.add(name)
+        }
+      }
+    } catch {
+      const [rows] = await connection.query<SchemaRow[]>(
+        `SELECT schema_name
+         FROM information_schema.schemata
+         WHERE schema_name NOT IN (?, ?, ?, ?)
+         ORDER BY schema_name`,
+        systemDatabases
+      )
+
+      for (const row of rows) {
+        if (row.schema_name) {
+          names.add(row.schema_name)
+        }
+      }
+    }
+
+    if (
+      config.database &&
+      (await canUseDatabase(connection, config.database))
+    ) {
+      names.add(config.database)
+    }
+
+    return allowedDatabaseNames([...names].sort()).map((name) => ({ name }))
   })
 }
 
@@ -109,6 +139,14 @@ export async function listTables(
        ORDER BY table_name`,
       [database]
     )
+
+    if (!rows.length) {
+      const showTables = await listTablesWithShowTables(connection, database)
+
+      if (showTables.length) {
+        return showTables
+      }
+    }
 
     return rows.map((row) => ({
       name: row.table_name,
@@ -172,15 +210,17 @@ export async function assertDatabaseExists(
   connection: MysqlConnection,
   database: string
 ) {
-  const [rows] = await connection.query<SchemaRow[]>(
-    `SELECT schema_name
-     FROM information_schema.schemata
-     WHERE schema_name = ?`,
-    [database]
-  )
-  const allowed = allowedDatabaseNames(rows.map((row) => row.schema_name))
+  if (!allowedDatabaseNames([database]).includes(database)) {
+    throw new Error("Database is not allowed by this app.")
+  }
 
-  if (!allowed.includes(database)) {
+  const visibleDatabases = await getVisibleDatabaseNames(connection)
+
+  if (visibleDatabases.includes(database)) {
+    return
+  }
+
+  if (!(await canUseDatabase(connection, database))) {
     throw new Error("Database is not available.")
   }
 }
@@ -200,7 +240,11 @@ export async function assertTableExists(
   )
 
   if (!rows.some((row) => row.table_name === table)) {
-    throw new Error("Table is not available.")
+    const showTables = await listTablesWithShowTables(connection, database)
+
+    if (!showTables.some((row) => row.name === table)) {
+      throw new Error("Table is not available.")
+    }
   }
 }
 
@@ -284,4 +328,68 @@ function mapReferencingTable(row: ReferencingRow): ReferencingTableMetadata {
     columnName: row.column_name,
     constraintName: row.constraint_name,
   }
+}
+
+async function getVisibleDatabaseNames(connection: MysqlConnection) {
+  try {
+    const [rows] = await connection.query<SchemaRow[]>("SHOW DATABASES")
+
+    return rows.map(readDatabaseName).filter(isPresent)
+  } catch {
+    const [rows] = await connection.query<SchemaRow[]>(
+      `SELECT schema_name
+       FROM information_schema.schemata
+       WHERE schema_name NOT IN (?, ?, ?, ?)`,
+      systemDatabases
+    )
+
+    return rows.map((row) => row.schema_name).filter(isPresent)
+  }
+}
+
+async function canUseDatabase(connection: MysqlConnection, database: string) {
+  try {
+    await connection.query(`USE ${quoteIdentifier(database)}`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readDatabaseName(row: SchemaRow) {
+  return row.schema_name ?? Object.values(row).find(isPresent)
+}
+
+function isPresent(value: string | undefined): value is string {
+  return typeof value === "string" && value.length > 0
+}
+
+async function listTablesWithShowTables(
+  connection: MysqlConnection,
+  database: string
+): Promise<TableSummary[]> {
+  const [rows] = await connection.query<ShowTableRow[]>(
+    `SHOW FULL TABLES FROM ${quoteIdentifier(database)}`
+  )
+  const tables: TableSummary[] = []
+
+  for (const row of rows) {
+    const values = Object.values(row).filter(isPresent)
+    const name = values[0]
+
+    if (!name) {
+      continue
+    }
+
+    tables.push({
+      name,
+      type: values[1] ?? "BASE TABLE",
+      engine: null,
+      rows: null,
+      createdAt: null,
+      updatedAt: null,
+    })
+  }
+
+  return tables
 }

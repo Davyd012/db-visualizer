@@ -34,24 +34,24 @@ export function LoginForm() {
         />
       </label>
 
-      <div className="grid grid-cols-[1fr_120px] gap-3">
-        <label className="grid gap-1.5 text-sm font-medium">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_120px]">
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">
           Username
           <input
             name="user"
             required
             autoComplete="username"
-            className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/40"
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/40"
           />
         </label>
-        <label className="grid gap-1.5 text-sm font-medium">
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">
           Port
           <input
             name="port"
             required
             inputMode="numeric"
             defaultValue="3306"
-            className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/40"
+            className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/40"
           />
         </label>
       </div>
