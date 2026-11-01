@@ -42,12 +42,18 @@ export function TableBrowser({
     rowPage.uniqueKeys.find((key) => key.primary) ?? rowPage.uniqueKeys[0]
   const editableColumns = getEditableColumns(
     policy,
-    visibleColumns,
+    visibleColumns.filter((column) =>
+      rowPage.selectedColumns.includes(column.name)
+    ),
     rowPage.uniqueKeys
   )
+  const hasKey = Boolean(
+    uniqueKey &&
+      uniqueKey.columns.every((column) => rowPage.selectedColumns.includes(column))
+  )
   const canUpdate =
-    policy.canUpdate && Boolean(uniqueKey) && editableColumns.length > 0
-  const canDelete = policy.canDelete && Boolean(uniqueKey)
+    policy.canUpdate && hasKey && editableColumns.length > 0
+  const canDelete = policy.canDelete && hasKey
 
   return (
     <section className="grid min-h-svh grid-rows-[auto_1fr]">
@@ -322,7 +328,8 @@ function RowForm({
       <div>
         <h2 className="font-medium">Edit row</h2>
         <p className="text-xs text-muted-foreground">
-          Key, generated, timestamp, binary, and sensitive fields are protected.
+          Only selected editable columns are shown. Use __DBV_NULL__ for SQL
+          NULL.
         </p>
       </div>
       {columns.map((column) => (
@@ -335,7 +342,11 @@ function RowForm({
           </span>
           <textarea
             name={`value:${column.name}`}
-            defaultValue={valueInputString(row[column.name])}
+            defaultValue={
+              row[column.name] === null
+                ? "__DBV_NULL__"
+                : valueInputString(row[column.name])
+            }
             rows={
               column.columnType.includes("text") ||
               column.columnType.includes("json")

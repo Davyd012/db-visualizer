@@ -64,11 +64,10 @@ export async function getRows(
       .filter(Boolean)
       .join(" ")
 
-    const [rows] = await connection.query<RowDataPacket[]>(sql, [
-      ...where.params,
-      pageSize + 1,
-      offset,
-    ])
+    const [rows] = await connection.query<RowDataPacket[]>(
+      { sql, dateStrings: true },
+      [...where.params, pageSize + 1, offset]
+    )
     const [indexRows] = await connection.query<RowDataPacket[]>(
       `SELECT
               index_name AS index_name,
